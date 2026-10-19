@@ -143,10 +143,11 @@ function lockPiece() {
 
 function spawn() {
   current = next;
-  next = randomPiece();
   if (collide(current.shape, current.x, current.y)) {
     endGame();
+    return;
   }
+  next = randomPiece();
   drawNext();
 }
 
@@ -252,6 +253,7 @@ function loop(ts) {
       lockPiece();
     }
   }
+  if (gameOver) return;
   draw();
   animId = requestAnimationFrame(loop);
 }

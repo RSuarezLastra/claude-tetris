@@ -13,6 +13,7 @@ const COLORS = [
   '#e57373', // Z - red
   '#64b5f6', // J - light blue
   '#ffb74d', // L - orange
+  '#f06292', // R - pink (reto)
 ];
 
 const PIECES = [
@@ -24,9 +25,12 @@ const PIECES = [
   [[5,5,0],[0,5,5],[0,0,0]],                  // Z
   [[6,0,0],[6,6,6],[0,0,0]],                  // J
   [[0,0,7],[7,7,7],[0,0,0]],                  // L
+  [[8,8,8],[8,0,8],[8,8,8]],                  // R (reto: anillo 3x3)
 ];
 
 const LINE_SCORES = [0, 100, 300, 500, 800];
+const CHALLENGE_CHANCE = 0.1; // probabilidad de la pieza reto 3x3
+const CLEAR_DELAY = 200; // ms que se iluminan las filas completas antes de borrarse
 
 const canvas = document.getElementById('board');
 const ctx = canvas.getContext('2d');
@@ -41,14 +45,14 @@ const overlayScore = document.getElementById('overlay-score');
 const restartBtn = document.getElementById('restart-btn');
 const themeBtn = document.getElementById('theme-toggle');
 
-let board, current, next, score, lines, level, paused, gameOver, lastTime, dropAccum, dropInterval, animId;
+let board, current, next, score, lines, level, paused, gameOver, lastTime, dropAccum, dropInterval, animId, clearingRows, clearAccum;
 
 function createBoard() {
   return Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
 }
 
 function randomPiece() {
-  const type = Math.floor(Math.random() * 7) + 1;
+  const type = Math.random() < CHALLENGE_CHANCE ? 8 : Math.floor(Math.random() * 7) + 1;
   const shape = PIECES[type].map(row => [...row]);
   return { type, shape, x: Math.floor(COLS / 2) - Math.floor(shape[0].length / 2), y: 0 };
 }
@@ -92,6 +96,13 @@ function merge() {
     for (let c = 0; c < current.shape[r].length; c++)
       if (current.shape[r][c])
         board[current.y + r][current.x + c] = current.shape[r][c];
+}
+
+function findFullRows() {
+  const rows = [];
+  for (let r = 0; r < ROWS; r++)
+    if (board[r].every(v => v !== 0)) rows.push(r);
+  return rows;
 }
 
 function clearLines() {
@@ -138,7 +149,14 @@ function softDrop() {
 
 function lockPiece() {
   merge();
-  clearLines();
+  const full = findFullRows();
+  if (full.length) {
+    // fase de iluminado: el borrado y el spawn ocurren en loop() tras CLEAR_DELAY
+    clearingRows = full;
+    clearAccum = 0;
+    current = null;
+    return;
+  }
   spawn();
 }
 
@@ -196,17 +214,26 @@ function draw() {
     for (let c = 0; c < COLS; c++)
       drawBlock(ctx, c, r, board[r][c], BLOCK);
 
-  // ghost
-  const gy = ghostY();
-  for (let r = 0; r < current.shape.length; r++)
-    for (let c = 0; c < current.shape[r].length; c++)
-      if (current.shape[r][c])
-        drawBlock(ctx, current.x + c, gy + r, current.shape[r][c], BLOCK, 0.2);
+  if (current) {
+    // ghost
+    const gy = ghostY();
+    for (let r = 0; r < current.shape.length; r++)
+      for (let c = 0; c < current.shape[r].length; c++)
+        if (current.shape[r][c])
+          drawBlock(ctx, current.x + c, gy + r, current.shape[r][c], BLOCK, 0.2);
 
-  // current piece
-  for (let r = 0; r < current.shape.length; r++)
-    for (let c = 0; c < current.shape[r].length; c++)
-      drawBlock(ctx, current.x + c, current.y + r, current.shape[r][c], BLOCK);
+    // current piece
+    for (let r = 0; r < current.shape.length; r++)
+      for (let c = 0; c < current.shape[r].length; c++)
+        drawBlock(ctx, current.x + c, current.y + r, current.shape[r][c], BLOCK);
+  }
+
+  // filas completas iluminadas antes de borrarse
+  if (clearingRows) {
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    for (const r of clearingRows)
+      ctx.fillRect(0, r * BLOCK, COLS * BLOCK, BLOCK);
+  }
 }
 
 function drawNext() {
@@ -245,13 +272,22 @@ function togglePause() {
 function loop(ts) {
   const dt = ts - lastTime;
   lastTime = ts;
-  dropAccum += dt;
-  if (dropAccum >= dropInterval) {
-    dropAccum = 0;
-    if (!collide(current.shape, current.x, current.y + 1)) {
-      current.y++;
-    } else {
-      lockPiece();
+  if (clearingRows) {
+    clearAccum += dt;
+    if (clearAccum >= CLEAR_DELAY) {
+      clearingRows = null;
+      clearLines();
+      spawn();
+    }
+  } else {
+    dropAccum += dt;
+    if (dropAccum >= dropInterval) {
+      dropAccum = 0;
+      if (!collide(current.shape, current.x, current.y + 1)) {
+        current.y++;
+      } else {
+        lockPiece();
+      }
     }
   }
   if (gameOver) return;
@@ -268,6 +304,8 @@ function init() {
   gameOver = false;
   dropInterval = 1000;
   dropAccum = 0;
+  clearingRows = null;
+  clearAccum = 0;
   lastTime = performance.now();
   next = randomPiece();
   spawn();
@@ -279,7 +317,7 @@ function init() {
 
 document.addEventListener('keydown', e => {
   if (e.code === 'KeyP') { togglePause(); return; }
-  if (paused || gameOver) return;
+  if (paused || gameOver || clearingRows) return;
   switch (e.code) {
     case 'ArrowLeft':
       if (!collide(current.shape, current.x - 1, current.y)) current.x--;

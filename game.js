@@ -45,7 +45,22 @@ const overlayScore = document.getElementById('overlay-score');
 const restartBtn = document.getElementById('restart-btn');
 const themeBtn = document.getElementById('theme-toggle');
 
+const overlayRecords = document.getElementById('overlay-records');
+const overlayRecordMsg = document.getElementById('overlay-record-msg');
+const overlayRecordsList = document.getElementById('overlay-records-list');
+const nameForm = document.getElementById('name-form');
+const nameInput = document.getElementById('name-input');
+const panelRecordsList = document.getElementById('panel-records');
+const bestComboEl = document.getElementById('best-combo');
+const maxLinesEl = document.getElementById('max-lines');
+const resetRecordsBtn = document.getElementById('reset-records-btn');
+
+const RECORDS_KEY = 'tetrisRecords';
+const MAX_RECORDS = 5;
+const MAX_NAME_LEN = 12;
+
 let board, current, next, score, lines, level, paused, gameOver, lastTime, dropAccum, dropInterval, animId, clearingRows, clearAccum;
+let combo, sessionBestCombo, records, pendingEntry, highlightEntry;
 
 function createBoard() {
   return Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
@@ -151,12 +166,15 @@ function lockPiece() {
   merge();
   const full = findFullRows();
   if (full.length) {
+    combo++;
+    if (combo > sessionBestCombo) sessionBestCombo = combo;
     // fase de iluminado: el borrado y el spawn ocurren en loop() tras CLEAR_DELAY
     clearingRows = full;
     clearAccum = 0;
     current = null;
     return;
   }
+  combo = 0; // pieza sin borrar líneas: se rompe la racha
   spawn();
 }
 
@@ -247,12 +265,133 @@ function drawNext() {
       drawBlock(nextCtx, offX + c, offY + r, shape[r][c], NB);
 }
 
+// ---- Records (localStorage) ----
+function defaultRecords() {
+  return { top: [], bestCombo: 0, maxLines: 0 };
+}
+
+function toCount(v) {
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+}
+
+function sortTop(top) {
+  // sort estable: ante empate, el récord más antiguo queda por delante
+  top.sort((a, b) => b.score - a.score);
+  return top.slice(0, MAX_RECORDS);
+}
+
+function loadRecords() {
+  const result = defaultRecords();
+  try {
+    const data = JSON.parse(localStorage.getItem(RECORDS_KEY));
+    if (!data || typeof data !== 'object') return result;
+    result.bestCombo = toCount(data.bestCombo);
+    result.maxLines = toCount(data.maxLines);
+    if (Array.isArray(data.top)) {
+      for (const e of data.top) {
+        if (!e || typeof e !== 'object' || !Number.isFinite(e.score) || e.score <= 0) continue;
+        result.top.push({
+          name: String(e.name ?? '').slice(0, MAX_NAME_LEN) || 'Anónimo',
+          score: toCount(e.score),
+          lines: toCount(e.lines),
+          level: toCount(e.level) || 1,
+          date: String(e.date ?? '').slice(0, 30),
+        });
+      }
+      result.top = sortTop(result.top);
+    }
+  } catch (e) { /* JSON corrupto o almacenamiento no disponible: valores por defecto */ }
+  return result;
+}
+
+function saveRecords() {
+  try { localStorage.setItem(RECORDS_KEY, JSON.stringify(records)); } catch (e) { /* almacenamiento no disponible */ }
+}
+
+function qualifiesForTop(s) {
+  return s > 0 && (records.top.length < MAX_RECORDS || s > records.top[records.top.length - 1].score);
+}
+
+function renderRecordList(listEl, highlight) {
+  listEl.replaceChildren();
+  if (!records.top.length) {
+    const li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = 'Sin records';
+    listEl.appendChild(li);
+    return;
+  }
+  records.top.forEach((entry, i) => {
+    const li = document.createElement('li');
+    if (entry === highlight) li.className = 'highlight';
+    const name = document.createElement('span');
+    name.className = 'rec-name';
+    name.textContent = `${i + 1}. ${entry.name}`;
+    const pts = document.createElement('span');
+    pts.textContent = entry.score.toLocaleString();
+    li.append(name, pts);
+    li.title = `${entry.lines} líneas · nivel ${entry.level}${entry.date ? ' · ' + entry.date : ''}`;
+    listEl.appendChild(li);
+  });
+}
+
+function renderRecords() {
+  renderRecordList(panelRecordsList, highlightEntry);
+  bestComboEl.textContent = records.bestCombo;
+  maxLinesEl.textContent = records.maxLines;
+  if (gameOver) renderRecordList(overlayRecordsList, highlightEntry);
+}
+
+function hideRecordsOverlay() {
+  overlayRecords.classList.add('hidden');
+  nameForm.classList.add('hidden');
+  nameInput.value = '';
+  overlayRecordMsg.textContent = '';
+}
+
+function submitName() {
+  if (!pendingEntry) return;
+  pendingEntry.name = nameInput.value.trim().slice(0, MAX_NAME_LEN) || 'Anónimo';
+  // releer por si otra pestaña modificó los records mientras tanto
+  const fresh = loadRecords();
+  fresh.bestCombo = Math.max(fresh.bestCombo, records.bestCombo);
+  fresh.maxLines = Math.max(fresh.maxLines, records.maxLines);
+  records = fresh;
+  records.top.push(pendingEntry);
+  records.top = sortTop(records.top);
+  highlightEntry = records.top.includes(pendingEntry) ? pendingEntry : null;
+  pendingEntry = null;
+  saveRecords();
+  nameForm.classList.add('hidden');
+  overlayRecordMsg.textContent = '¡Récord guardado!';
+  renderRecords();
+}
+
 function endGame() {
   gameOver = true;
   cancelAnimationFrame(animId);
   overlayTitle.textContent = 'GAME OVER';
   overlayScore.textContent = `Puntuación: ${score.toLocaleString()}`;
+
+  // estadísticas globales: se guardan aunque la puntuación no entre en el top
+  records = loadRecords();
+  records.bestCombo = Math.max(records.bestCombo, sessionBestCombo);
+  records.maxLines = Math.max(records.maxLines, lines);
+  highlightEntry = null;
+  pendingEntry = null;
+  if (qualifiesForTop(score)) {
+    pendingEntry = { name: '', score, lines, level, date: new Date().toLocaleDateString('es-ES') };
+    overlayRecordMsg.textContent = '¡Nuevo récord! Escribe tu nombre';
+    nameForm.classList.remove('hidden');
+  } else {
+    overlayRecordMsg.textContent = '';
+    nameForm.classList.add('hidden');
+  }
+  saveRecords();
+  renderRecords();
+  overlayRecords.classList.remove('hidden');
   overlay.classList.remove('hidden');
+  if (pendingEntry) nameInput.focus();
 }
 
 function togglePause() {
@@ -306,6 +445,13 @@ function init() {
   dropAccum = 0;
   clearingRows = null;
   clearAccum = 0;
+  combo = 0;
+  sessionBestCombo = 0;
+  pendingEntry = null;
+  highlightEntry = null;
+  hideRecordsOverlay();
+  records = loadRecords();
+  renderRecords();
   lastTime = performance.now();
   next = randomPiece();
   spawn();
@@ -316,6 +462,7 @@ function init() {
 }
 
 document.addEventListener('keydown', e => {
+  if (e.target === nameInput) return; // escribiendo el nombre: el juego no intercepta teclas
   if (e.code === 'KeyP') { togglePause(); return; }
   if (paused || gameOver || clearingRows) return;
   switch (e.code) {
@@ -340,7 +487,33 @@ document.addEventListener('keydown', e => {
   updateHUD();
 });
 
-restartBtn.addEventListener('click', init);
+restartBtn.addEventListener('click', () => {
+  // si hay un récord sin nombre, se guarda como "Anónimo" en vez de perderlo
+  if (pendingEntry) submitName();
+  init();
+  restartBtn.blur(); // evita que Space (hardDrop) reactive el botón
+});
+
+nameForm.addEventListener('submit', e => {
+  e.preventDefault();
+  submitName();
+  document.activeElement.blur(); // devuelve el foco al documento
+});
+
+resetRecordsBtn.addEventListener('click', () => {
+  resetRecordsBtn.blur(); // evita que Space (hardDrop) active el botón enfocado
+  const ok = confirm('¿Borrar todos los records?');
+  lastTime = performance.now(); // confirm() bloquea: evita un dt enorme en el bucle
+  if (!ok) return;
+  try { localStorage.removeItem(RECORDS_KEY); } catch (e) { /* almacenamiento no disponible */ }
+  records = defaultRecords();
+  highlightEntry = null;
+  pendingEntry = null; // ya no hay nada que guardar
+  nameForm.classList.add('hidden');
+  overlayRecordMsg.textContent = '';
+  renderRecords();
+  resetRecordsBtn.blur();
+});
 
 function updateThemeBtn() {
   themeBtn.textContent = document.documentElement.dataset.theme === 'dark' ? '☀️ Claro' : '🌙 Oscuro';
